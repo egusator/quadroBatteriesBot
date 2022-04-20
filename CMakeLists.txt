@@ -29,6 +29,7 @@ if (CURL_FOUND)
     include_directories(${CURL_INCLUDE_DIRS})
     add_definitions(-DHAVE_CURL)
 endif()
+include_directories("date/include/date")
 
 
 INCLUDE_DIRECTORIES( ${CMAKE_CURRENT_SOURCE_DIR}/include )
