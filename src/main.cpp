@@ -15,7 +15,7 @@ string token, commandsList, connInfo, currentBatteryID,
 bool waitingForBatteryType = false, waitingForBattery = false,
     waitingForFlightType = false, waitingForSpentEnergy = false,
     waitingForTime = false, waitingForBatteryRemoving = false,
-    waitingForBatteryToShowFlights = false;
+    waitingForShowingNextFlights = false;
 pqxx::connection *C;
 int main(int argc, char *argv[]) {
 
@@ -272,6 +272,46 @@ int main(int argc, char *argv[]) {
                               }
                               bot.getApi().sendMessage(message->chat->id, messageToSend);
   });
+
+
+  bot.getEvents().onCommand("flights_of_battery",
+                            [&bot](TgBot::Message::Ptr message) {
+                              string batID = message->text.substr(message->text.length() - 2, 2);
+                              string messageToSend = "All flights with battery " + batID + ":\n";
+                              pqxx::work tx(*C);
+                              pqxx::result flight =
+                                  tx.exec(
+                                      "select * from flight left join battery on flight.battery_id = battery.id \
+                                              left join flight_type on flight.flight_type_id = flight_type.id \
+                                      where user_id =" + to_string(message->chat->id)
+                                          + " and special_bat_id = '" + batID + "' order by timestamp desc");
+                              if (flight.size() == 0) {
+                                sys_days ();
+                                bot.getApi().sendMessage(message->chat->id, "You haven't any flights with this battery(add_some - /add_flight)");
+                              } else {
+
+                                uint64_t currentDay = 0, i = 0;
+                                for (auto flightRow:flight) {
+
+                                  if (currentDay == 0 || ((stoi(string(flightRow[5].c_str()))+7*3600)/86400) != currentDay) {
+                                    currentDay = (stoi(string(flightRow[5].c_str()))+7*3600)/86400;
+                                    ostringstream dateStream;
+                                    dateStream << sys_days {days(currentDay)};
+                                    messageToSend += dateStream.str() + "\n";
+                                  }
+                                  messageToSend += to_string(++i) +") ";
+                                  messageToSend += string(flightRow[11].c_str()) + ", ";
+                                  messageToSend += "spent " + string(flightRow[3].c_str()) + " mAh, ";
+                                  int seconds = stoi(string(flightRow[4].c_str()));
+                                  messageToSend += to_string(seconds / 60) + ":"
+                                      + to_string(seconds % 60) + "\n";
+                                }
+                              }
+                              bot.getApi().sendMessage(message->chat->id, messageToSend);
+                            });
+
+
+
 
 
   bot.getEvents().onCommand("remove_battery",
