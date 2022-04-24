@@ -3,7 +3,7 @@
 #include <tgbot/tgbot.h>
 #include "date.h"
 #include <sstream>
-#define FLIGTHS_IN_ONE_MESSAGE 10
+#define FLIGTHS_IN_ONE_MESSAGE 2
 using namespace std;
 using namespace pqxx;
 using namespace TgBot;
@@ -282,41 +282,48 @@ int main(int argc, char *argv[]) {
                               }
   });
 
-
   bot.getEvents().onCommand("flights_of_battery",
                             [&bot](TgBot::Message::Ptr message) {
                               string batID = message->text.substr(message->text.length() - 2, 2);
                               string messageToSend = "All flights with battery " + batID + ":\n";
                               pqxx::work tx(*C);
-                              pqxx::result flight =
-                                  tx.exec(
+                              flight =
+                                  new result(tx.exec(
                                       "select * from flight left join battery on flight.battery_id = battery.id \
                                               left join flight_type on flight.flight_type_id = flight_type.id \
                                       where user_id =" + to_string(message->chat->id)
-                                          + " and special_bat_id = '" + batID + "' order by timestamp desc");
-                              if (flight.size() == 0) {
+                                          + " and special_bat_id = '" + batID + "' order by timestamp desc"));
+                              if (flight->size() == 0) {
                                 sys_days ();
-                                bot.getApi().sendMessage(message->chat->id, "You haven't any flights with this battery(add_some - /add_flight)");
+                                bot.getApi().sendMessage(message->chat->id, "You haven't any flights with this battery (add_some - /add_flight)");
                               } else {
 
-                                uint64_t currentDay = 0, i = 0;
-                                for (auto flightRow:flight) {
-
+                                int remaining =  flight->size() - currentFlightRow;
+                                currentTen++;
+                                for (int i = currentFlightRow; i != min(currentTen*FLIGTHS_IN_ONE_MESSAGE, remaining); i++) {
+                                  currentFlightRow++;
+                                  row flightRow = (*flight)[i];
                                   if (currentDay == 0 || ((stoi(string(flightRow[5].c_str()))+7*3600)/86400) != currentDay) {
                                     currentDay = (stoi(string(flightRow[5].c_str()))+7*3600)/86400;
                                     ostringstream dateStream;
                                     dateStream << sys_days {days(currentDay)};
                                     messageToSend += dateStream.str() + "\n";
                                   }
-                                  messageToSend += to_string(++i) +") ";
+                                  messageToSend += string(flightRow[9].c_str()) + " - ";
                                   messageToSend += string(flightRow[11].c_str()) + ", ";
                                   messageToSend += "spent " + string(flightRow[3].c_str()) + " mAh, ";
                                   int seconds = stoi(string(flightRow[4].c_str()));
                                   messageToSend += to_string(seconds / 60) + ":"
                                       + to_string(seconds % 60) + "\n";
+
+                                }
+
+                                bot.getApi().sendMessage(message->chat->id, messageToSend);
+                                if (currentFlightRow < flight->size()) {
+                                  bot.getApi().sendMessage(message->chat->id, "More? (send one letter y/n)");
+                                  waitingForShowingNextFlights = true;
                                 }
                               }
-                              bot.getApi().sendMessage(message->chat->id, messageToSend);
                             });
 
 
