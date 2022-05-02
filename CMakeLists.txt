@@ -8,8 +8,8 @@ find_package(Boost COMPONENTS system REQUIRED)
 find_package(CURL)
 
 set( NAME_SRC
-    src/main.cpp    
-)
+    src/main.cpp
+        )
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -lpqxx -lpq")
 

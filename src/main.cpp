@@ -4,11 +4,30 @@
 #include "date.h"
 #include <sstream>
 #define FLIGTHS_IN_ONE_MESSAGE 2
+#define TIMEZONE 7
+#define SECONDS_IN_HOUR 3600
+#define SECONDS_IN_DAY 86400
 using namespace std;
 using namespace pqxx;
 using namespace TgBot;
 using namespace date;
 using namespace chrono;
+
+string outputFligthRowString (row flightRow) {
+  string messageToSend;
+messageToSend += string(flightRow[9].c_str()) + " - ";
+messageToSend += string(flightRow[11].c_str()) + ", ";
+messageToSend += "spent " + string(flightRow[3].c_str()) + " mAh, ";
+int seconds = stoi(string(flightRow[4].c_str()));
+messageToSend += to_string(seconds / 60) + ":"
++ to_string(seconds % 60) + "\n";
+return messageToSend;
+}
+
+int getDayInt(field field) {
+  return(stoi(string(field.c_str()))+TIMEZONE*SECONDS_IN_HOUR)/SECONDS_IN_DAY;
+}
+
 
 string token, commandsList, connInfo, currentBatteryID,
     currentSpentEnergy, currentFlightType;
@@ -17,6 +36,46 @@ bool waitingForBatteryType = false, waitingForBattery = false,
     waitingForFlightType = false, waitingForSpentEnergy = false,
     waitingForTime = false, waitingForBatteryRemoving = false,
     waitingForShowingNextFlights = false;
+
+string outputBatteryTypeString (row row, bool shorter_form = false) {
+  string res;
+
+  res += string(row["manufacturer_name"].c_str()) + " ";
+
+  if (!string(row["type_name"].c_str()).empty())
+    res += string(row["type_name"].c_str()) + " ";
+
+  if (!string(row["capacity"].c_str()).empty())
+    res += string(row["capacity"].c_str()) + " mAh ";
+
+  if (!string(row["max_voltage"].c_str()).empty())
+    res += "max: "
+        + to_string(
+            ((double) stoi(string(row["max_voltage"].c_str())))
+                / 100).substr(0, 4) + "V ";
+
+  if (!shorter_form) {
+
+    if (!string(row["max_current"].c_str()).empty())
+      res += string(row["max_current"].c_str())  + " ";
+
+  if (!string(row["nominal_voltage"].c_str()).empty())
+    res += "nominal: "
+        + to_string(
+            ((double) stoi(string(row["nominal_voltage"].c_str())))
+                / 100).substr(0, 4) + "V ";
+
+    if (!string(row["watthours"].c_str()).empty())
+      res += "nominal: "
+          + to_string(
+              ((double) stoi(string(row["watthours"].c_str())))
+                  / 100).substr(0, 4) + "V ";
+  }
+  res += "\n";
+  return res;
+
+}
+
 pqxx::result* flight;
 uint64_t currentDay = 0; int currentFlightRow = 0, currentTen = 0;
 pqxx::connection *C;
@@ -58,7 +117,8 @@ int main(int argc, char *argv[]) {
     } else {
       bot.getApi().sendMessage(message->chat->id,
                                "Wassupo, " + to_string(message->from->firstName)
-                                   + "\nThis bot is created to manage batteries for quadrocopters.\nList of commands:\n"
+                                   + "\nThis bot is created to manage batteries for quadrocopters.\n"
+                                     "List of commands:\n"
                                    + commandsList);
     }
 
@@ -73,52 +133,20 @@ int main(int argc, char *argv[]) {
                               string messageToSend =
                                   "Select a battery type (send a number): \n";
                               pqxx::work tx(*C);
-                              pqxx::result manufacturer = tx.exec(
-                                  "SELECT * FROM battery_manufacturer");
                               pqxx::result battery_type = tx.exec(
-                                  "SELECT * FROM battery_type");
+                                  "SELECT battery_type.name as type_name, battery_manufacturer.name "
+                                  "as manufacturer_name, *"
+                                  " FROM battery_type left join battery_manufacturer on "
+                                  "battery_type.manufacturer_id = battery_manufacturer.id");
                               int i = 0;
                               for (auto row : battery_type) {
+                                i++;
 
-                                messageToSend += string(row[0].c_str()) + ") ";
-
-                                for (auto manufRow : manufacturer) {
-                                  if (row[1] == manufRow[0]) {
-                                    string c = string(manufRow[1].c_str());
-                                    messageToSend += c + " ";
-
-                                  }
-                                }
-
-                                if (!string(row[2].c_str()).empty())
-                                  messageToSend += string(row[2].c_str()) + " ";
-
-                                if (!string(row[3].c_str()).empty())
-                                  messageToSend += string(row[3].c_str()) + " mAh ";
-
-                                if (!string(row[4].c_str()).empty())
-                                  messageToSend += "max: "
-                                      + to_string(
-                                          ((double) stoi(string(row[4].c_str())))
-                                              / 100).substr(0, 4) + "V ";
-
-                                if (!string(row[5].c_str()).empty())
-                                  messageToSend += string(row[5].c_str()) + " ";
-
-                                if (!string(row[6].c_str()).empty())
-                                  messageToSend += "max: "
-                                      + to_string(
-                                          ((double) stoi(string(row[6].c_str())))
-                                              / 100) + "V ";
-
-                                if (!string(row[7].c_str()).empty())
-                                  messageToSend += to_string(
-                                      ((double) stoi(string(row[7].c_str()))) / 100)
-                                      + "Wh \n";
-                                tx.commit();
+                                messageToSend += to_string(i) + ") " + outputBatteryTypeString(row) ;
                               }
                               bot.getApi().sendMessage(message->chat->id, messageToSend);
                               waitingForBatteryType = true;
+                              tx.commit();
                             });
 
   bot.getEvents().onCommand("my_batteries",
@@ -126,56 +154,26 @@ int main(int argc, char *argv[]) {
                               string messageToSend = "List of your batteries: \n";
                               pqxx::work tx(*C);
                               pqxx::result batteryOfUser =
-                                  tx.exec(
-                                      "SELECT battery_type_id, special_bat_id \
-							FROM battery where user_id = "
-                                          + to_string(message->chat->id)
-                                          + " order by special_bat_id");
+                                  tx.exec("select battery_manufacturer.name as manufacturer_name, * "
+                                          "from (SELECT battery_type.name as type_name, * from battery "
+                                          "left join battery_type on battery.battery_type_id = battery_type.id) "
+                                          "as t left join  battery_manufacturer on t.manufacturer_id = "
+                                          "battery_manufacturer.id where user_id = " + to_string(message->chat->id) +
+                                          "order by special_bat_id");
+                                                                                                                     ;
+
                               if (batteryOfUser.size() == 0) {
                                 messageToSend +=
-                                    "You don't have any batteries :(\nAdd some with command /add_battery";
+                                    "You don't have any batteries (add some with command /add_battery)\n";
                               } else {
                                 int i = 0;
+
                                 for (auto row : batteryOfUser) {
                                   i++;
-                                  messageToSend += string(to_string(i)) + ") "
-                                      + string(row[1].c_str()) + " - ";
-
-                                  pqxx::result battery_type =
-                                      tx.exec(
-                                          "SELECT manufacturer_id, name, \
-								capacity, max_voltage from battery_type where id = "
-                                              + string(row[0].c_str()));
-                                  for (auto batteryTypeRow : battery_type) {
-
-                                    pqxx::result manuf =
-                                        tx.exec(
-                                            "select name from battery_manufacturer where id = "
-                                                + string(
-                                                    batteryTypeRow[0].c_str()));
-                                    messageToSend += string(manuf[0][0].c_str()) + " ";
-                                    if (!string(batteryTypeRow[1].c_str()).empty())
-                                      messageToSend += string(
-                                          batteryTypeRow[1].c_str()) + " ";
-
-                                    if (!string(batteryTypeRow[2].c_str()).empty())
-                                      messageToSend += string(
-                                          batteryTypeRow[2].c_str()) + " mAh ";
-
-                                    if (!string(batteryTypeRow[3].c_str()).empty())
-                                      messageToSend +=
-                                          "max: "
-                                              + to_string(
-                                                  ((double) stoi(
-                                                      string(
-                                                          batteryTypeRow[3].c_str())))
-                                                      / 100).substr(0,
-                                                                    4) + "V \n";
-
-                                  }
+                                  messageToSend += to_string(i) + ") " + string(row["special_bat_id"].c_str()) +
+                                     " - " + outputBatteryTypeString(row, true);
                                 }
                               }
-
                               bot.getApi().sendMessage(message->chat->id, messageToSend);
                             });
 
@@ -185,11 +183,13 @@ int main(int argc, char *argv[]) {
                                   "Choose the battery from your list (send ID, for example, G1):\n";
                               pqxx::work tx(*C);
                               pqxx::result batteryOfUser =
-                                  tx.exec(
-                                      "SELECT battery_type_id, special_bat_id \
-											FROM battery where user_id = "
-                                          + to_string(message->chat->id)
-                                          + " order by special_bat_id");
+                                  tx.exec("select battery_manufacturer.name as manufacturer_name, * "
+                                          "from (SELECT battery_type.name as type_name, * from battery "
+                                          "left join battery_type on battery.battery_type_id = battery_type.id) "
+                                          "as t left join  battery_manufacturer on t.manufacturer_id = "
+                                          "battery_manufacturer.id where user_id = " +
+                                          to_string(message->chat->id) +
+                                          "order by special_bat_id");
                               if (batteryOfUser.size() == 0) {
                                 messageToSend +=
                                     "You don't have any batteries :(\nAdd some with command /add_battery";
@@ -197,47 +197,12 @@ int main(int argc, char *argv[]) {
                                 int i = 0;
                                 for (auto row : batteryOfUser) {
                                   i++;
-                                  messageToSend += string(to_string(i)) + ") "
-                                      + string(row[1].c_str()) + " - ";
 
-                                  pqxx::result battery_type =
-                                      tx.exec(
-                                          "SELECT manufacturer_id, name, \
-												capacity, max_voltage from battery_type where id = "
-                                              + string(row[0].c_str()));
-                                  for (auto batteryTypeRow : battery_type) {
-
-                                    pqxx::result manuf =
-                                        tx.exec(
-                                            "select name from battery_manufacturer where id = "
-                                                + string(
-                                                    batteryTypeRow[0].c_str()));
-                                    messageToSend += string(manuf[0][0].c_str()) + " ";
-                                    if (!string(batteryTypeRow[1].c_str()).empty())
-                                      messageToSend += string(
-                                          batteryTypeRow[1].c_str()) + " ";
-
-                                    if (!string(batteryTypeRow[2].c_str()).empty())
-                                      messageToSend += string(
-                                          batteryTypeRow[2].c_str()) + " mAh ";
-
-                                    if (!string(batteryTypeRow[3].c_str()).empty())
-                                      messageToSend +=
-                                          "max: "
-                                              + to_string(
-                                                  ((double) stoi(
-                                                      string(
-                                                          batteryTypeRow[3].c_str())))
-                                                      / 100).substr(0,
-                                                                    4) + "V \n";
-
-                                  }
-                                }
 
                               }
-
                               bot.getApi().sendMessage(message->chat->id, messageToSend);
                               waitingForBattery = true;
+                              }
                             });
 
   bot.getEvents().onCommand("my_flights",
@@ -248,31 +213,29 @@ int main(int argc, char *argv[]) {
                                   new result(tx.exec(
                                       "select * from flight left join battery on flight.battery_id = battery.id \
                                               left join flight_type on flight.flight_type_id = flight_type.id \
-                                      where user_id =" + to_string(message->chat->id)
-                                      + "order by timestamp desc"));
+                                      where user_id =" + to_string(message->chat->id) + "order by timestamp desc"));
+
+
+
                               if (flight->size() == 0) {
-                                sys_days ();
-                                bot.getApi().sendMessage(message->chat->id, "You haven't any flights (add_some - /add_flight)");
+                                bot.getApi().sendMessage(message->chat->id,
+                                                         "You haven't any flights (add_some - /add_flight)");
                               } else {
 
-                                int remaining =  flight->size() - currentFlightRow;
+
                                 currentTen++;
-                                for (int i = currentFlightRow; i != min(currentTen*FLIGTHS_IN_ONE_MESSAGE, remaining); i++) {
+                                for (int i = currentFlightRow; i !=
+                                min(currentTen*FLIGTHS_IN_ONE_MESSAGE, flight->size()); i++) {
                                   currentFlightRow++;
                                 row flightRow = (*flight)[i];
-                                if (currentDay == 0 || ((stoi(string(flightRow[5].c_str()))+7*3600)/86400) != currentDay) {
-                                  currentDay = (stoi(string(flightRow[5].c_str()))+7*3600)/86400;
+                                if (currentDay == 0 ||
+                                    getDayInt(flightRow["timestamp"]) != currentDay) {
+                                  currentDay = getDayInt(flightRow["timestamp"]);
                                   ostringstream dateStream;
                                   dateStream << sys_days {days(currentDay)};
                                   messageToSend += dateStream.str() + "\n";
                                 }
-                                messageToSend += string(flightRow[9].c_str()) + " - ";
-                                messageToSend += string(flightRow[11].c_str()) + ", ";
-                                messageToSend += "spent " + string(flightRow[3].c_str()) + " mAh, ";
-                                int seconds = stoi(string(flightRow[4].c_str()));
-                                messageToSend += to_string(seconds / 60) + ":"
-                                      + to_string(seconds % 60) + "\n";
-
+                                messageToSend += outputFligthRowString(flightRow);
                                 }
                               }
                               bot.getApi().sendMessage(message->chat->id, messageToSend);
@@ -298,32 +261,32 @@ int main(int argc, char *argv[]) {
                                 bot.getApi().sendMessage(message->chat->id, "You haven't any flights with this battery (add_some - /add_flight)");
                               } else {
 
-                                int remaining =  flight->size() - currentFlightRow;
-                                currentTen++;
-                                for (int i = currentFlightRow; i != min(currentTen*FLIGTHS_IN_ONE_MESSAGE, remaining); i++) {
-                                  currentFlightRow++;
-                                  row flightRow = (*flight)[i];
-                                  if (currentDay == 0 || ((stoi(string(flightRow[5].c_str()))+7*3600)/86400) != currentDay) {
-                                    currentDay = (stoi(string(flightRow[5].c_str()))+7*3600)/86400;
-                                    ostringstream dateStream;
-                                    dateStream << sys_days {days(currentDay)};
-                                    messageToSend += dateStream.str() + "\n";
+                                if (flight->size() == 0) {
+                                  bot.getApi().sendMessage(message->chat->id,
+                                                           "You haven't any flights (add_some - /add_flight)");
+                                } else {
+
+                                  int remaining =  flight->size() - currentFlightRow;
+                                  currentTen++;
+                                  for (int i = currentFlightRow; i !=
+                                      min(currentTen*FLIGTHS_IN_ONE_MESSAGE, remaining); i++) {
+                                    currentFlightRow++;
+                                    row flightRow = (*flight)[i];
+                                    if (currentDay == 0 ||
+                                        getDayInt(flightRow["timestamp"]) != currentDay) {
+                                      currentDay = getDayInt(flightRow["timestamp"]);
+                                      ostringstream dateStream;
+                                      dateStream << sys_days {days(currentDay)};
+                                      messageToSend += dateStream.str() + "\n";
+                                    }
+                                    messageToSend += outputFligthRowString(flightRow);
                                   }
-                                  messageToSend += string(flightRow[9].c_str()) + " - ";
-                                  messageToSend += string(flightRow[11].c_str()) + ", ";
-                                  messageToSend += "spent " + string(flightRow[3].c_str()) + " mAh, ";
-                                  int seconds = stoi(string(flightRow[4].c_str()));
-                                  messageToSend += to_string(seconds / 60) + ":"
-                                      + to_string(seconds % 60) + "\n";
-
                                 }
-
                                 bot.getApi().sendMessage(message->chat->id, messageToSend);
                                 if (currentFlightRow < flight->size()) {
                                   bot.getApi().sendMessage(message->chat->id, "More? (send one letter y/n)");
-                                  waitingForShowingNextFlights = true;
-                                }
-                              }
+                                  waitingForShowingNextFlights = true;}}
+                              
                             });
 
 
@@ -332,8 +295,7 @@ int main(int argc, char *argv[]) {
 
   bot.getEvents().onCommand("remove_battery",
                             [&bot](TgBot::Message::Ptr message) {
-                              string messageToSend =
-                                  "Select a battery to delete from your list(send id, for example: G1): \n";
+
                               pqxx::work tx(*C);
                               pqxx::result batteryOfUser =
                                   tx.exec(
@@ -342,71 +304,33 @@ int main(int argc, char *argv[]) {
                                           + to_string(message->chat->id)
                                           + " order by special_bat_id");
                               if (batteryOfUser.size() == 0) {
-                                messageToSend +=
-                                    "You don't have any batteries :(\nAdd some with command /add_battery";
+                                bot.getApi().sendMessage(message->chat->id,
+                                    "You don't have any batteries :(\nAdd some with command /add_battery");
                               } else {
-                                int i = 0;
-                                for (auto row : batteryOfUser) {
-                                  i++;
-                                  messageToSend += string(to_string(i)) + ") "
-                                      + string(row[1].c_str()) + " - ";
-
-                                  pqxx::result battery_type =
-                                      tx.exec(
-                                          "SELECT manufacturer_id, name, \
-										capacity, max_voltage from battery_type where id = "
-                                              + string(row[0].c_str()));
-                                  for (auto batteryTypeRow : battery_type) {
-
-                                    pqxx::result manuf =
-                                        tx.exec(
-                                            "select name from battery_manufacturer where id = "
-                                                + string(
-                                                    batteryTypeRow[0].c_str()));
-                                    messageToSend += string(manuf[0][0].c_str()) + " ";
-                                    if (!string(batteryTypeRow[1].c_str()).empty())
-                                      messageToSend += string(
-                                          batteryTypeRow[1].c_str()) + " ";
-
-                                    if (!string(batteryTypeRow[2].c_str()).empty())
-                                      messageToSend += string(
-                                          batteryTypeRow[2].c_str()) + " mAh ";
-
-                                    if (!string(batteryTypeRow[3].c_str()).empty())
-                                      messageToSend +=
-                                          "max: "
-                                              + to_string(
-                                                  ((double) stoi(
-                                                      string(
-                                                          batteryTypeRow[3].c_str())))
-                                                      / 100).substr(0,
-                                                                    4) + "V \n";
-
-                                  }
-                                }
+                                tx.exec("delete from battery where user_id = " + to_string(message->chat->id) + " and special_bat_id = '"
+                                            + to_string(message->text) + "'");
+                                bot.getApi().sendMessage(message->chat->id,
+                                                         "Battery " + to_string(message->text)
+                                                             + " was removed from your list. Check - /my_batteries");
+                                waitingForBatteryRemoving = false;
+                                tx.commit();
                               }
-
-                              bot.getApi().sendMessage(message->chat->id, messageToSend);
-                              waitingForBatteryRemoving = true;
                             });
 
   bot.getEvents().onAnyMessage([&bot](TgBot::Message::Ptr message) {
     if (waitingForBatteryType) {
       pqxx::work tx(*C);
-      pqxx::result r = tx.exec("SELECT * FROM battery where user_id = " + to_string(message->chat->id)
+      pqxx::result r = tx.exec("select battery_manufacturer.name as manufacturer_name, * "
+                               "from (SELECT battery_type.name as type_name, * from battery "
+                               "left join battery_type on battery.battery_type_id = battery_type.id) "
+                               "as t left join  battery_manufacturer on t.manufacturer_id = "
+                               " battery_manufacturer.id where user_id = " + to_string(message->chat->id)
                                    + " AND battery_type_id = "
-                                   + to_string(message->text));
-      pqxx::result manuf = tx.exec("SELECT * FROM battery_manufacturer");
+                                   + to_string(message->text) + " order by special_bat_id desc");
 
-      char currentSym;
-      for (auto row : manuf) {
-        if (to_string(message->text) == string(row[0].c_str())) {
-          currentSym = string(row[1].c_str())[0];
-          break;
-        }
-      }
-      int number = r.size() + 1;
-      string bat_id = currentSym + to_string(number);
+
+      string bat_id = string(r[0]["special_bat_id"].c_str())[0] +
+          to_string(stoi(string(r[0]["special_bat_id"].c_str()).substr(1)) + 1) ;
       tx.exec(
           "insert into battery (user_id, battery_type_id, special_bat_id) values("
               + to_string(message->chat->id) + ", "
@@ -431,8 +355,8 @@ int main(int argc, char *argv[]) {
       pqxx::result flightType = tx.exec(
           "select * from flight_type order by id");
       for (auto row : flightType) {
-        messageToSend += string(row[0].c_str()) + ") "
-            + string(row[1].c_str()) + "\n";
+        messageToSend += string(row["id"].c_str()) + ") "
+            + string(row["name"].c_str()) + "\n";
       }
 
       bot.getApi().sendMessage(message->chat->id,
@@ -479,37 +403,30 @@ int main(int argc, char *argv[]) {
       waitingForBatteryRemoving = false;
       tx.commit();
     } else if (waitingForShowingNextFlights) {
-      if (message->text == "y") {
+      if (message->text == "y" && currentFlightRow != flight->size()) {
       string messageToSend;
-      currentTen++;
-      for (int i = currentFlightRow; i != min(currentTen*FLIGTHS_IN_ONE_MESSAGE, flight->size()); i++) {
 
-        currentFlightRow++;
-        row flightRow = (*flight)[i];
-        if (currentDay == 0 || ((stoi(string(flightRow[5].c_str()))+7*3600)/86400) != currentDay) {
-          currentDay = (stoi(string(flightRow[5].c_str()))+7*3600)/86400;
-          ostringstream dateStream;
-          dateStream << sys_days {days(currentDay)};
-          messageToSend += dateStream.str() + "\n";
+        currentTen++;
+        for (int i = currentFlightRow; i !=
+            min(currentTen*FLIGTHS_IN_ONE_MESSAGE, flight->size()); i++) {
+          currentFlightRow++;
+          row flightRow = (*flight)[i];
+          if (currentDay == 0 ||
+              getDayInt(flightRow["timestamp"]) != currentDay) {
+            currentDay = getDayInt(flightRow["timestamp"]);
+            ostringstream dateStream;
+            dateStream << sys_days {days(currentDay)};
+            messageToSend += dateStream.str() + "\n";
+          }
+          messageToSend += outputFligthRowString(flightRow);
         }
-        messageToSend += string(flightRow[9].c_str()) + " - ";
-        messageToSend += string(flightRow[11].c_str()) + ", ";
-        messageToSend += "spent " + string(flightRow[3].c_str()) + " mAh, ";
-        int seconds = stoi(string(flightRow[4].c_str()));
-        messageToSend += to_string(seconds / 60) + ":"
-            + to_string(seconds % 60) + "\n";
 
+      bot.getApi().sendMessage(message->chat->id, messageToSend);
+      if (currentFlightRow < flight->size()) {
+        bot.getApi().sendMessage(message->chat->id, "More? (send one letter y/n)");
+        waitingForShowingNextFlights = true;
       }
-
-    bot.getApi().sendMessage(message->chat->id, messageToSend);
-    if (currentFlightRow < flight->size()) {
-      bot.getApi().sendMessage(message->chat->id, "More? (send one letter y/n)");
-    } else {
-      waitingForShowingNextFlights = false;
-      currentFlightRow = 0;
-      currentTen = 0;
-    }
-      }  else {
+      } else {
         waitingForShowingNextFlights = false;
         currentFlightRow = 0;
         currentTen = 0;
